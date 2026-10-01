@@ -38,9 +38,9 @@ import {
 import {
   calculateSemesterTargetPoints,
   generateShiftsFromTemplate,
-  optimizeSchedule,
   parseLocalDate,
 } from '../scheduler';
+import { runOptimizer } from '../runOptimizer';
 import { Language, translations } from '../translations';
 import {
   CoopConfig,
@@ -63,6 +63,8 @@ interface AdminViewProps {
   scheduleDoc: CoopScheduleDoc;
   onSaveConfig: (newConfig: CoopConfig) => Promise<void>;
   onSaveSchedule: (newSchedule: CoopScheduleDoc) => Promise<void>;
+  /** Re-reads wishes from the database (so late submissions are included). */
+  onReloadWishes?: () => Promise<Record<string, FamilyWish>>;
   onSwitchTerm?: (termId: string) => Promise<void>;
   onSwitchToParentView?: () => void;
   showChangePinModalExternal?: boolean;
@@ -78,6 +80,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   scheduleDoc,
   onSaveConfig,
   onSaveSchedule,
+  onReloadWishes,
   onSwitchTerm,
   onSwitchToParentView,
   showChangePinModalExternal = false,
@@ -95,7 +98,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
   });
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<boolean>(false);
-  const [storedGlobalPin, setStoredGlobalPin] = useState<string>('1234');
+  // null until the PIN has been loaded; login is not possible before that (fail closed)
+  const [storedGlobalPin, setStoredGlobalPin] = useState<string | null>(null);
+  const [pinLoadError, setPinLoadError] = useState<boolean>(false);
 
   // Change PIN modal state
   const [showChangePinModal, setShowChangePinModal] = useState(false);
@@ -229,7 +234,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
       .then(pin => {
         if (pin) setStoredGlobalPin(pin);
       })
-      .catch(err => console.error('Failed to load global admin PIN:', err));
+      .catch(err => {
+        console.error('Failed to load global admin PIN:', err);
+        setPinLoadError(true);
+      });
   }, []);
 
   // Sync state when incoming config changes
@@ -292,8 +300,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   const handlePinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const correctPin = storedGlobalPin || '1234';
-    if (pinInput.trim() === correctPin) {
+    if (!storedGlobalPin) {
+      setPinError(true);
+      return;
+    }
+    if (pinInput.trim() === storedGlobalPin) {
       setIsAuthenticated(true);
       setPinError(false);
       sessionStorage.setItem('coop_admin_logged_in', 'true');
@@ -341,11 +352,25 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   const handleGenerateAllShifts = async () => {
     if (isTermLocked) return;
+    const hasAssignments = shifts.some(s => s.assignedFamilyId) || Boolean(scheduleDoc?.metrics);
+    if (shifts.length > 0 && typeof window !== 'undefined' && !window.confirm(t.admin.regenerateConfirm)) return;
     setIsGeneratingShifts(true);
     try {
-      const generated = generateShiftsFromTemplate(startDate, endDate, weeklyTemplate, shiftTypes);
+      // IDs are stable (date + template row + slot), so parents' blocked shifts keep matching.
+      // Manually added single shifts inside the term are kept.
+      const fromTemplate = generateShiftsFromTemplate(startDate, endDate, weeklyTemplate, shiftTypes);
+      const singles = shifts
+        .filter(s => s.id.startsWith('shift-single-') && s.date >= startDate && s.date <= endDate)
+        .map(s => ({ ...s, assignedFamilyId: null }));
+      const generated = [...fromTemplate, ...singles].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
       setShifts(generated);
       await handlePersistConfig({ shifts: generated });
+      if (hasAssignments) {
+        // The old schedule no longer matches the shifts: clear it
+        await onSaveSchedule({ id: config.id, assignments: [], metrics: null, isFinalized: false, updatedAt: new Date().toISOString() });
+        setMetrics(null);
+        setOptimizerDone(false);
+      }
       setShiftsGeneratedDone(true);
       flashSuccess(`${generated.length} ${t.admin.shiftsGenerated}`);
     } finally {
@@ -476,6 +501,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   const handleRemoveFamily = (familyId: string) => {
     setFamilies(families.filter(f => f.id !== familyId));
+    // Their shifts become unassigned instead of pointing at a family that no longer exists
+    setShifts(prev => prev.map(s => (s.assignedFamilyId === familyId ? { ...s, assignedFamilyId: null } : s)));
   };
 
   // Immediate visual feedback with async tick before heavy optimization
@@ -487,14 +514,27 @@ export const AdminView: React.FC<AdminViewProps> = ({
     await new Promise(resolve => setTimeout(resolve, 80));
 
     try {
-      const { assignments, metrics: solverMetrics } = optimizeSchedule(
+      // Re-read wishes so families who answered after this page was opened are included
+      let latestWishes = wishes;
+      if (onReloadWishes) {
+        try {
+          latestWishes = await onReloadWishes();
+        } catch (err) {
+          console.error('Could not reload wishes, using the ones already loaded:', err);
+        }
+      }
+      // Only wishes from current families count
+      const familyIds = new Set(families.map(f => f.id));
+      const currentWishes = Object.fromEntries(Object.entries(latestWishes).filter(([id]) => familyIds.has(id)));
+
+      const { assignments, metrics: solverMetrics } = await runOptimizer({
         shifts,
         families,
         shiftTypes,
-        wishes,
+        wishes: currentWishes,
         startDate,
-        endDate
-      );
+        endDate,
+      });
 
       const assignmentMap = new Map(assignments.map(a => [a.shiftId, a.familyId]));
       const updatedShifts = shifts.map(s => ({
@@ -540,12 +580,22 @@ export const AdminView: React.FC<AdminViewProps> = ({
     flashSuccess(complete ? t.admin.termCompletedBanner : t.admin.publishedBanner);
   };
 
-  const handleUpdateShiftDetails = async (updatedShift: Shift) => {
+  const handleUpdateShiftDetails = async (editedShift: Shift) => {
     if (isTermLocked) return;
+    // Keep weekday in sync if the date was changed
+    const jsDay = parseLocalDate(editedShift.date).getDay();
+    const updatedShift = { ...editedShift, dayOfWeek: jsDay === 0 ? 7 : jsDay };
     const updated = shifts.map(s => (s.id === updatedShift.id ? updatedShift : s));
     setShifts(updated);
     setSelectedShiftForEdit(null);
     await handlePersistConfig({ shifts: updated });
+    // Keep the saved schedule in sync, otherwise the old assignment comes back after publishing
+    if (scheduleDoc?.assignments?.length) {
+      const assignments = updated
+        .filter(s => !s.isCancelled && s.assignedFamilyId)
+        .map(s => ({ shiftId: s.id, familyId: s.assignedFamilyId as string }));
+      await onSaveSchedule({ ...scheduleDoc, assignments });
+    }
     flashSuccess(t.app.savedNotice);
   };
 
@@ -569,7 +619,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         sourceConfig = config;
       } else {
         try {
-          sourceConfig = await fetchCoopConfig(selectedCopyTermId);
+          sourceConfig = (await fetchCoopConfig(selectedCopyTermId)) ?? config;
         } catch {
           sourceConfig = config;
         }
@@ -699,9 +749,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 className="w-full text-center tracking-widest text-xl sm:text-2xl font-bold px-4 py-3 bg-stone-50 dark:bg-stone-800 border border-stone-300 dark:border-stone-700 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-stone-900 dark:text-stone-100"
                 autoFocus
               />
-              {pinError && (
+              {pinError && !pinLoadError && (
                 <p className="text-xs text-rose-600 dark:text-rose-400 font-medium mt-2">
                   {t.admin.invalidPin}
+                </p>
+              )}
+              {pinLoadError && (
+                <p className="text-xs text-rose-600 dark:text-rose-400 font-medium mt-2">
+                  {t.admin.pinLoadError}
                 </p>
               )}
             </div>

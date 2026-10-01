@@ -44,12 +44,15 @@ function AppContent() {
   const [lang, setLang] = useState<Language>(getInitialLanguage);
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
   const [loading, setLoading] = useState<boolean>(true);
+  // 'ok' | 'error' (load failed) | 'notFound' (unknown/deleted term). While not 'ok',
+  // no admin or parent view is rendered, so nothing can be saved over real data.
+  const [loadState, setLoadState] = useState<'ok' | 'error' | 'notFound'>('ok');
   const [currentTermId, setCurrentTermId] = useState<string>('main');
   const [showChangePinModal, setShowChangePinModal] = useState<boolean>(false);
   const [showNewTermModal, setShowNewTermModal] = useState<boolean>(false);
 
   // Database state
-  const [config, setConfig] = useState<CoopConfig>(createInitialConfig('main'));
+  const [config, setConfig] = useState<CoopConfig>(() => createInitialConfig('main'));
   const [wishes, setWishes] = useState<Record<string, FamilyWish>>({});
   const [scheduleDoc, setScheduleDoc] = useState<CoopScheduleDoc>({
     id: 'main',
@@ -87,7 +90,12 @@ function AppContent() {
         fetchSchedule(termId),
       ]);
 
-      if (loadedConfig) setConfig(loadedConfig);
+      if (!loadedConfig) {
+        setCurrentTermId(termId);
+        setLoadState('notFound');
+        return;
+      }
+      setConfig(loadedConfig);
       if (loadedWishes?.wishes) setWishes(loadedWishes.wishes);
       else setWishes({});
       if (loadedSchedule) setScheduleDoc(loadedSchedule);
@@ -102,9 +110,12 @@ function AppContent() {
       }
 
       setCurrentTermId(termId);
+      setLoadState('ok');
     } catch (err) {
+      // Never fall back to demo data here: saving that would overwrite the real term.
       console.error('Failed to load cooperative data:', err);
-      setConfig(createInitialConfig(termId));
+      setCurrentTermId(termId);
+      setLoadState('error');
     } finally {
       setLoading(false);
     }
@@ -141,12 +152,16 @@ function AppContent() {
   }, [searchParams.get('term')]);
 
   const handleSwitchTerm = async (termId: string) => {
+    if (searchParams.get('term') === termId) {
+      await loadTermData(termId);
+      return;
+    }
+    // Changing ?term triggers the load effect above (no second, duplicate load here)
     setSearchParams(prev => {
       const next = new URLSearchParams(prev);
       next.set('term', termId);
       return next;
     });
-    await loadTermData(termId);
   };
 
   const handleToggleAdmin = (admin: boolean) => {
@@ -169,15 +184,20 @@ function AppContent() {
   };
 
   const handleSaveWish = async (wish: FamilyWish) => {
+    // Let errors reach ParentView so the family sees that the save failed
+    await saveFamilyWish(config.id, wish);
     setWishes(prev => ({
       ...prev,
       [wish.familyId]: wish,
     }));
-    try {
-      await saveFamilyWish(config.id, wish);
-    } catch (err) {
-      console.error('Failed to save wish to database:', err);
-    }
+  };
+
+  /** Fresh wishes from the database, used right before generating a schedule. */
+  const handleReloadWishes = async (): Promise<Record<string, FamilyWish>> => {
+    const doc = await fetchWishes(config.id);
+    const fresh = doc?.wishes || {};
+    setWishes(fresh);
+    return fresh;
   };
 
   const handleSaveSchedule = async (newSchedule: CoopScheduleDoc) => {
@@ -202,6 +222,33 @@ function AppContent() {
     );
   }
 
+  const statusScreen =
+    loadState === 'ok' ? null : (
+      <div className="max-w-md mx-auto px-4 py-12 sm:py-16">
+        <div className="bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 p-6 sm:p-8 shadow-xs text-center space-y-4">
+          <h2 className="text-lg sm:text-xl font-bold text-stone-900 dark:text-stone-100">
+            {loadState === 'error' ? t.app.loadErrorTitle : t.app.termNotFoundTitle}
+          </h2>
+          <p className="text-sm text-stone-600 dark:text-stone-400">
+            {loadState === 'error' ? t.app.loadErrorDesc : t.app.termNotFoundDesc}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              if (loadState === 'error') {
+                loadTermData(currentTermId);
+              } else {
+                navigate(isAdmin ? '/admin' : '/', { replace: true });
+              }
+            }}
+            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl cursor-pointer"
+          >
+            {loadState === 'error' ? t.app.retry : t.app.goToCurrentTerm}
+          </button>
+        </div>
+      </div>
+    );
+
   return (
     <div className="min-h-screen bg-stone-100/70 dark:bg-stone-950 text-stone-900 dark:text-stone-100 flex flex-col font-sans selection:bg-emerald-200 dark:selection:bg-emerald-800 transition-colors">
       {/* Top Header */}
@@ -220,6 +267,7 @@ function AppContent() {
 
       {/* Main Content Area with HashRouter routes */}
       <main className="flex-1 pb-16 w-full max-w-full overflow-x-hidden">
+        {statusScreen ? statusScreen : (
         <Routes>
           <Route
             path="/admin"
@@ -230,6 +278,7 @@ function AppContent() {
                 scheduleDoc={scheduleDoc}
                 onSaveConfig={handleSaveConfig}
                 onSaveSchedule={handleSaveSchedule}
+                onReloadWishes={handleReloadWishes}
                 onSwitchTerm={handleSwitchTerm}
                 onSwitchToParentView={() => handleToggleAdmin(false)}
                 showChangePinModalExternal={showChangePinModal}
@@ -250,6 +299,7 @@ function AppContent() {
                   scheduleDoc={scheduleDoc}
                   onSaveConfig={handleSaveConfig}
                   onSaveSchedule={handleSaveSchedule}
+                  onReloadWishes={handleReloadWishes}
                   onSwitchTerm={handleSwitchTerm}
                   onSwitchToParentView={() => handleToggleAdmin(false)}
                   showChangePinModalExternal={showChangePinModal}
@@ -269,6 +319,7 @@ function AppContent() {
             }
           />
         </Routes>
+        )}
       </main>
     </div>
   );

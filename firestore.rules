@@ -17,25 +17,30 @@ service cloud.firestore {
     // Term Configurations (e.g. coop_configs/main, coop_configs/vt2027)
     match /coop_configs/{termId} {
       allow read: if isValidId(termId);
-      allow write: if isValidId(termId) && (incoming().id is string || request.resource == null);
+      allow create, update: if isValidId(termId) && incoming().id is string;
+      // The app only soft-deletes terms (sets `deleted: true`), so real deletes are blocked.
+      allow delete: if false;
     }
 
     // Cooperative global index and settings (e.g. coop/_index, coop/_settings)
     match /coop/{docId} {
       allow read: if isValidId(docId);
-      allow write: if isValidId(docId);
+      allow create, update: if isValidId(docId);
+      allow delete: if false;
     }
 
     // Family wishes & preferences
     match /wishes/{termId} {
       allow read: if isValidId(termId);
-      allow write: if isValidId(termId);
+      allow create, update: if isValidId(termId);
+      allow delete: if false;
     }
 
     // Generated & published schedule
     match /schedules/{termId} {
       allow read: if isValidId(termId);
-      allow write: if isValidId(termId);
+      allow create, update: if isValidId(termId);
+      allow delete: if false;
     }
   }
 }

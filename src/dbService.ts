@@ -1,4 +1,4 @@
-import { deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, FieldPath, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { generateShiftsFromTemplate } from './scheduler';
 import {
@@ -100,8 +100,10 @@ export async function fetchGlobalAdminPin(): Promise<string> {
     await setDoc(doc(db, 'coop', '_settings'), { adminPin: '1234', updatedAt: new Date().toISOString() });
     _cachedGlobalAdminPin = '1234';
     return '1234';
-  } catch {
-    return '1234';
+  } catch (error) {
+    // Fail closed: if the PIN can't be loaded we don't fall back to a default PIN.
+    console.error('Could not load admin PIN:', error);
+    throw error;
   }
 }
 
@@ -185,13 +187,20 @@ export async function saveTermsIndex(terms: TermSummary[]): Promise<void> {
   }
 }
 
-export async function fetchCoopConfig(coopId = 'main'): Promise<CoopConfig> {
+/**
+ * Loads a term. Returns null when the term doesn't exist (or was deleted), so an old or
+ * mistyped link never creates a new term. Only the very first default term ('main') is
+ * created automatically, so a brand-new installation still works.
+ */
+export async function fetchCoopConfig(coopId = 'main'): Promise<CoopConfig | null> {
   const path = `coop_configs/${coopId}`;
   try {
     const snap = await getDoc(doc(db, 'coop_configs', coopId));
     if (snap.exists()) {
-      return snap.data() as CoopConfig;
+      const data = snap.data() as CoopConfig & { deleted?: boolean };
+      return data.deleted ? null : (data as CoopConfig);
     }
+    if (coopId !== 'main') return null;
     const initial = createInitialConfig(coopId);
     await setDoc(doc(db, 'coop_configs', coopId), initial);
     return initial;
@@ -237,9 +246,9 @@ export async function saveCoopConfig(config: CoopConfig): Promise<void> {
 export async function deleteTerm(termId: string): Promise<TermSummary[]> {
   const path = `coop_configs/${termId}`;
   try {
-    await deleteDoc(doc(db, 'coop_configs', termId));
-    await deleteDoc(doc(db, 'wishes', termId));
-    await deleteDoc(doc(db, 'schedules', termId));
+    // Soft delete: the term is hidden from the app but its data stays in Firestore,
+    // so a mistaken delete can be undone by removing the `deleted` flag in the console.
+    await setDoc(doc(db, 'coop_configs', termId), { deleted: true, deletedAt: new Date().toISOString() }, { merge: true });
 
     const currentTerms = await fetchTermsIndex();
     const updatedTerms = currentTerms.filter(t => t.id !== termId);
@@ -319,33 +328,31 @@ export async function fetchWishes(coopId = 'main'): Promise<CoopWishesDoc> {
     if (snap.exists()) {
       return snap.data() as CoopWishesDoc;
     }
-    const initial: CoopWishesDoc = {
-      id: coopId,
-      wishes: {},
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(doc(db, 'wishes', coopId), initial);
-    return initial;
+    // Nothing saved yet: return an empty doc without writing (the first saved wish creates it)
+    return { id: coopId, wishes: {}, updatedAt: new Date().toISOString() };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
   }
 }
 
+/**
+ * Saves one family's wish without touching the other families' wishes, so two families
+ * saving at the same moment can't overwrite each other.
+ */
 export async function saveFamilyWish(coopId: string, wish: FamilyWish): Promise<void> {
   const path = `wishes/${coopId}`;
+  const ref = doc(db, 'wishes', coopId);
+  const now = new Date().toISOString();
   try {
-    const current = await fetchWishes(coopId);
-    const updated: CoopWishesDoc = {
-      id: coopId,
-      wishes: {
-        ...current.wishes,
-        [wish.familyId]: wish,
-      },
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(doc(db, 'wishes', coopId), updated);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+    await updateDoc(ref, new FieldPath('wishes', wish.familyId), wish, 'updatedAt', now);
+  } catch (error: any) {
+    if (error?.code !== 'not-found') handleFirestoreError(error, OperationType.WRITE, path);
+    // First wish for this term: create the document (merge keeps anything written meanwhile)
+    try {
+      await setDoc(ref, { id: coopId, wishes: { [wish.familyId]: wish }, updatedAt: now }, { merge: true });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, path);
+    }
   }
 }
 
@@ -363,7 +370,6 @@ export async function fetchSchedule(coopId = 'main'): Promise<CoopScheduleDoc> {
       isFinalized: false,
       updatedAt: new Date().toISOString(),
     };
-    await setDoc(doc(db, 'schedules', coopId), initial);
     return initial;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);

@@ -70,7 +70,10 @@ export const ParentView: React.FC<ParentViewProps> = ({
   const [parentSubView, setParentSubView] = useState<'my_shifts' | 'all_shifts'>('my_shifts');
 
   const defaultRatios = calculateDefaultShiftRatios(config.shifts, config.shiftTypes);
-  const isPublished = config.status === 'published';
+  // A finished (completed) term still shows the schedule, never the wish form again
+  const isPublished = config.status === 'published' || config.status === 'completed';
+  const isCollecting = config.status === 'collecting';
+  const [saveFailed, setSaveFailed] = useState(false);
 
   // Load existing wishes when selected family changes
   useEffect(() => {
@@ -142,12 +145,14 @@ export const ParentView: React.FC<ParentViewProps> = ({
       submittedAt: new Date().toISOString(),
     };
 
+    setSaveFailed(false);
     try {
       await onSaveWish(wish);
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 5000);
     } catch (err) {
       console.error('Failed to save parent wish:', err);
+      setSaveFailed(true);
     } finally {
       setIsSaving(false);
     }
@@ -168,7 +173,7 @@ export const ParentView: React.FC<ParentViewProps> = ({
     a.href = url;
     a.download = `schema-${selectedFam?.name || 'kooperativet'}.ics`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const selectedFamily = config.families.find(f => f.id === selectedFamilyId);
@@ -374,7 +379,14 @@ export const ParentView: React.FC<ParentViewProps> = ({
       )}
 
       {/* When family is selected and schedule is in wishes collection mode: 3-Choice Form */}
-      {selectedFamilyId && !isPublished && (
+      {selectedFamilyId && !isPublished && !isCollecting && (
+        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-2xl p-5 sm:p-6 text-center space-y-1">
+          <h2 className="text-base sm:text-lg font-bold text-amber-950 dark:text-amber-100">{t.parent.notOpenYetTitle}</h2>
+          <p className="text-xs sm:text-sm text-amber-800 dark:text-amber-300">{t.parent.notOpenYetDesc}</p>
+        </div>
+      )}
+
+      {selectedFamilyId && isCollecting && (
         <form onSubmit={handleSubmit} className="space-y-6 sm:space-y-8">
           {/* Choice 1: Spacing Preference */}
           <section className="bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 p-4 sm:p-7 shadow-xs space-y-4">
@@ -638,7 +650,9 @@ export const ParentView: React.FC<ParentViewProps> = ({
           {/* Submission and Confirmation */}
           <div className="bg-stone-50 dark:bg-stone-800/50 border border-stone-200 dark:border-stone-800 rounded-2xl p-4 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="text-xs sm:text-sm text-stone-600 dark:text-stone-400 text-center sm:text-left">
-              {savedSuccess ? (
+              {saveFailed ? (
+                <span className="text-rose-700 dark:text-rose-400 font-bold">{t.parent.saveFailed}</span>
+              ) : savedSuccess ? (
                 <span className="text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1.5 justify-center sm:justify-start">
                   <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                   {t.parent.submissionSuccess}
