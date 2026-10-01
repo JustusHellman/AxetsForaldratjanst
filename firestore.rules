@@ -1,0 +1,41 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // Term Configurations (e.g. coop_configs/main, coop_configs/vt2027)
+    match /coop_configs/{termId} {
+      allow read: if isValidId(termId);
+      allow write: if isValidId(termId) && (incoming().id is string || request.resource == null);
+    }
+
+    // Cooperative global index and settings (e.g. coop/_index, coop/_settings)
+    match /coop/{docId} {
+      allow read: if isValidId(docId);
+      allow write: if isValidId(docId);
+    }
+
+    // Family wishes & preferences
+    match /wishes/{termId} {
+      allow read: if isValidId(termId);
+      allow write: if isValidId(termId);
+    }
+
+    // Generated & published schedule
+    match /schedules/{termId} {
+      allow read: if isValidId(termId);
+      allow write: if isValidId(termId);
+    }
+  }
+}

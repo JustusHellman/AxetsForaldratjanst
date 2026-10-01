@@ -1,0 +1,132 @@
+{
+  "entities": {
+    "CoopConfig": {
+      "title": "CoopConfig",
+      "description": "Configuration of preschool cooperative semester schedule and shifts",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the cooperative term"
+        },
+        "termName": {
+          "type": "string",
+          "description": "Name of the semester (e.g. Höstterminen 2026)",
+          "maxLength": 100
+        },
+        "startDate": {
+          "type": "string",
+          "description": "Start date in YYYY-MM-DD format",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "endDate": {
+          "type": "string",
+          "description": "End date in YYYY-MM-DD format",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "adminPin": {
+          "type": "string",
+          "description": "Simple PIN code protecting admin management",
+          "maxLength": 16
+        },
+        "shiftTypes": {
+          "type": "array",
+          "description": "List of shift types (cleaning, childcare, etc.)"
+        },
+        "weeklyTemplate": {
+          "type": "array",
+          "description": "Template of weekly recurring shifts"
+        },
+        "shifts": {
+          "type": "array",
+          "description": "All concrete shifts generated for the semester"
+        },
+        "families": {
+          "type": "array",
+          "description": "Registered cooperative families"
+        },
+        "status": {
+          "type": "string",
+          "description": "Status of the semester schedule",
+          "enum": ["setup", "collecting", "published"]
+        },
+        "shareToken": {
+          "type": "string",
+          "description": "Public share access token",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["id", "termName", "startDate", "endDate", "adminPin", "shiftTypes", "shifts", "families", "status"]
+    },
+    "CoopWishes": {
+      "title": "CoopWishes",
+      "description": "Wishes and constraints submitted by cooperative families",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document ID matching the cooperative term ID"
+        },
+        "wishes": {
+          "type": "object",
+          "description": "Map of family ID to wish data"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["id", "wishes"]
+    },
+    "CoopSchedule": {
+      "title": "CoopSchedule",
+      "description": "Final or draft schedule assignments and fairness metrics",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document ID matching the cooperative term ID"
+        },
+        "assignments": {
+          "type": "array",
+          "description": "List of assignments mapping shift ID to family ID"
+        },
+        "metrics": {
+          "type": "object",
+          "description": "Fairness and satisfaction statistics"
+        },
+        "isFinalized": {
+          "type": "boolean",
+          "description": "Whether the schedule has been published to families"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["id", "assignments", "isFinalized"]
+    }
+  },
+  "firestore": {
+    "/coop_configs/{termId}": {
+      "schema": "CoopConfig",
+      "description": "Individual semester configurations, shifts, families and status"
+    },
+    "/coop/{docId}": {
+      "schema": "CoopConfig",
+      "description": "Cooperative global index and settings"
+    },
+    "/wishes/{termId}": {
+      "schema": "CoopWishes",
+      "description": "Family preference submissions for the cooperative term"
+    },
+    "/schedules/{termId}": {
+      "schema": "CoopSchedule",
+      "description": "Finalized or draft shift assignments and fairness metrics"
+    }
+  }
+}
