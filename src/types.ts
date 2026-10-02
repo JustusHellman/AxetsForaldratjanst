@@ -38,10 +38,15 @@ export interface Family {
 
 export type SpacingPreference = 'spread' | 'grouped' | 'neutral';
 
+/** How much of a shift type a family wants (question 2). */
+export type TypePreferenceLevel = 'none' | 'little' | 'medium' | 'mostly' | 'only';
+
 export interface FamilyWish {
   familyId: string;
   spacingPreference: SpacingPreference;
-  typeRatios: Record<string, number>; // percentage target for each shiftTypeId, e.g. { "cleaning": 75, "childcare": 25 }
+  typeRatios: Record<string, number>; // percentage target for each shiftTypeId, e.g. { "cleaning": 75, "childcare": 25 } (derived from typeLevels)
+  typeLevels?: Record<string, TypePreferenceLevel>; // what the family picked per shift type
+  typeFlexible?: boolean; // "Spelar ingen roll": the type mix doesn't count towards satisfaction
   blockedDates: string[]; // YYYY-MM-DD
   blockedShiftIds: string[]; // specific shift IDs
   submittedAt: string;

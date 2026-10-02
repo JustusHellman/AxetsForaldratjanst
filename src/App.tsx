@@ -26,6 +26,8 @@ import {
   saveSchedule,
 } from './dbService';
 import { applyTheme, getInitialTheme } from './theme';
+import { safeGet } from './safeStorage';
+import { migrateWishes } from './migrations';
 import {
   getInitialLanguage,
   Language,
@@ -49,6 +51,9 @@ function AppContent() {
   const [loadState, setLoadState] = useState<'ok' | 'error' | 'notFound'>('ok');
   const [currentTermId, setCurrentTermId] = useState<string>('main');
   const [showChangePinModal, setShowChangePinModal] = useState<boolean>(false);
+  const [adminAuthenticated, setAdminAuthenticated] = useState<boolean>(
+    () => safeGet('coop_admin_logged_in', 'sessionStorage') === 'true'
+  );
   const [showNewTermModal, setShowNewTermModal] = useState<boolean>(false);
 
   // Database state
@@ -96,7 +101,8 @@ function AppContent() {
         return;
       }
       setConfig(loadedConfig);
-      if (loadedWishes?.wishes) setWishes(loadedWishes.wishes);
+      // Old blocked-shift IDs are mapped to the current shift IDs (see migrations.ts)
+      if (loadedWishes?.wishes) setWishes(migrateWishes(loadedWishes.wishes, loadedConfig.shifts || []));
       else setWishes({});
       if (loadedSchedule) setScheduleDoc(loadedSchedule);
       else {
@@ -195,7 +201,7 @@ function AppContent() {
   /** Fresh wishes from the database, used right before generating a schedule. */
   const handleReloadWishes = async (): Promise<Record<string, FamilyWish>> => {
     const doc = await fetchWishes(config.id);
-    const fresh = doc?.wishes || {};
+    const fresh = migrateWishes(doc?.wishes || {}, config.shifts || []);
     setWishes(fresh);
     return fresh;
   };
@@ -263,6 +269,8 @@ function AppContent() {
         termName={config.termName}
         onOpenChangePin={() => setShowChangePinModal(true)}
         onOpenNewTerm={() => setShowNewTermModal(true)}
+        isAdminAuthenticated={adminAuthenticated}
+        currentTermId={currentTermId}
       />
 
       {/* Main Content Area with HashRouter routes */}
@@ -279,6 +287,7 @@ function AppContent() {
                 onSaveConfig={handleSaveConfig}
                 onSaveSchedule={handleSaveSchedule}
                 onReloadWishes={handleReloadWishes}
+                onAuthenticated={() => setAdminAuthenticated(true)}
                 onSwitchTerm={handleSwitchTerm}
                 onSwitchToParentView={() => handleToggleAdmin(false)}
                 showChangePinModalExternal={showChangePinModal}
@@ -300,6 +309,7 @@ function AppContent() {
                   onSaveConfig={handleSaveConfig}
                   onSaveSchedule={handleSaveSchedule}
                   onReloadWishes={handleReloadWishes}
+                  onAuthenticated={() => setAdminAuthenticated(true)}
                   onSwitchTerm={handleSwitchTerm}
                   onSwitchToParentView={() => handleToggleAdmin(false)}
                   showChangePinModalExternal={showChangePinModal}

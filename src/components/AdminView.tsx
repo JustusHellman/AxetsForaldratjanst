@@ -36,11 +36,15 @@ import {
   saveGlobalAdminPin,
 } from '../dbService';
 import {
+  calculateDefaultShiftRatios,
   calculateSemesterTargetPoints,
   generateShiftsFromTemplate,
   parseLocalDate,
 } from '../scheduler';
 import { runOptimizer } from '../runOptimizer';
+import { safeGet, safeSet } from '../safeStorage';
+import { findScheduleWarnings } from '../scheduleWarnings';
+import { WishResultSummary } from './WishResultSummary';
 import { Language, translations } from '../translations';
 import {
   CoopConfig,
@@ -65,6 +69,8 @@ interface AdminViewProps {
   onSaveSchedule: (newSchedule: CoopScheduleDoc) => Promise<void>;
   /** Re-reads wishes from the database (so late submissions are included). */
   onReloadWishes?: () => Promise<Record<string, FamilyWish>>;
+  /** Called when the correct PIN has been entered. */
+  onAuthenticated?: () => void;
   onSwitchTerm?: (termId: string) => Promise<void>;
   onSwitchToParentView?: () => void;
   showChangePinModalExternal?: boolean;
@@ -81,6 +87,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   onSaveConfig,
   onSaveSchedule,
   onReloadWishes,
+  onAuthenticated,
   onSwitchTerm,
   onSwitchToParentView,
   showChangePinModalExternal = false,
@@ -94,7 +101,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   // Persistent PIN authentication state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    return sessionStorage.getItem('coop_admin_logged_in') === 'true';
+    return safeGet('coop_admin_logged_in', 'sessionStorage') === 'true';
   });
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<boolean>(false);
@@ -182,6 +189,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [newShiftTypeId, setNewShiftTypeId] = useState(config.shiftTypes[0]?.id || '');
   const [newShiftStart, setNewShiftStart] = useState(config.shiftTypes[0]?.defaultStartTime || '18:00');
   const [newShiftEnd, setNewShiftEnd] = useState(config.shiftTypes[0]?.defaultEndTime || '20:30');
+
+  // Which family's "wished vs. got" row is open in the results table
+  const [expandedFamilyId, setExpandedFamilyId] = useState<string | null>(null);
 
   // Solver metrics
   const [metrics, setMetrics] = useState<FairnessMetrics | null>(scheduleDoc.metrics);
@@ -306,8 +316,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
     if (pinInput.trim() === storedGlobalPin) {
       setIsAuthenticated(true);
+      if (onAuthenticated) onAuthenticated();
       setPinError(false);
-      sessionStorage.setItem('coop_admin_logged_in', 'true');
+      safeSet('coop_admin_logged_in', 'true', 'sessionStorage');
     } else {
       setPinError(true);
     }
@@ -1595,6 +1606,36 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           </div>
 
+          {/* Things no schedule can fully solve – shown before generating */}
+          {(() => {
+            const warnings = findScheduleWarnings(shifts, families, shiftTypes, wishes);
+            if (warnings.length === 0) return null;
+            return (
+              <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-xl space-y-1.5">
+                <h4 className="text-sm font-bold text-amber-950 dark:text-amber-100 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>{t.admin.warningsTitle}</span>
+                </h4>
+                <ul className="list-disc pl-5 space-y-1 text-xs sm:text-sm text-amber-900 dark:text-amber-200">
+                  {warnings.map((w, i) => (
+                    <li key={i}>
+                      {w.kind === 'familyTooBlocked'
+                        ? t.admin.warningTooBlocked
+                            .replace('{family}', w.familyName)
+                            .replace('{available}', String(w.availablePoints))
+                            .replace('{target}', String(w.targetPoints))
+                        : t.admin.warningOverlap
+                            .replace('{date}', w.date)
+                            .replace('{count}', String(w.concurrent))
+                            .replace('{families}', String(w.families))}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[11px] sm:text-xs text-amber-800 dark:text-amber-300">{t.admin.warningsHelp}</p>
+              </div>
+            );
+          })()}
+
           {/* 2. Top Summary Metrics (Beneath the generator) */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="p-3.5 bg-stone-50 dark:bg-stone-800 rounded-xl border border-stone-200 dark:border-stone-700">
@@ -1649,7 +1690,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <span>{t.admin.resultsOverview}</span>
                 </h4>
                 <span className="text-xs text-stone-500 font-semibold">
-                  {lang === 'sv' ? 'Snittnöjdhet:' : 'Avg:'} <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{metrics.averageSatisfaction}%</strong> • {lang === 'sv' ? 'Lägsta:' : 'Worst:'} <strong className="text-stone-800 dark:text-stone-200 font-bold">{metrics.worstSatisfaction}%</strong>
+                  {t.admin.avgShort} <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{metrics.averageSatisfaction}%</strong> • {t.admin.worstShort} <strong className="text-stone-800 dark:text-stone-200 font-bold">{metrics.worstSatisfaction}%</strong>
                 </span>
               </div>
 
@@ -1676,8 +1717,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       }, 0);
                       const shiftCount = evalData?.totalShifts ?? famShifts.length;
 
+                      const isOpen = expandedFamilyId === fam.id;
                       return (
-                        <tr key={fam.id} className="hover:bg-stone-50/50 dark:hover:bg-stone-800/50 transition-colors">
+                        <React.Fragment key={fam.id}>
+                        <tr className="hover:bg-stone-50/50 dark:hover:bg-stone-800/50 transition-colors">
                           <td className="px-3.5 py-2.5 font-bold text-stone-900 dark:text-stone-100 whitespace-nowrap">
                             {fam.name}
                           </td>
@@ -1685,7 +1728,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                             {totalPts.toFixed(1)} {t.admin.points}
                           </td>
                           <td className="px-3.5 py-2.5 text-stone-700 dark:text-stone-300 whitespace-nowrap">
-                            {shiftCount} {lang === 'sv' ? 'pass' : 'shifts'}
+                            {shiftCount} {t.admin.shiftsUnit}
                           </td>
                           <td className="px-3.5 py-2.5">
                             <div className="flex items-center gap-1.5 flex-wrap">
@@ -1705,22 +1748,70 @@ export const AdminView: React.FC<AdminViewProps> = ({
                             </div>
                           </td>
                           <td className="px-3.5 py-2.5 whitespace-nowrap">
-                            <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300">
-                              {evalData?.satisfactionScore ?? 100}%
-                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setExpandedFamilyId(isOpen ? null : fam.id)}
+                              aria-expanded={isOpen}
+                              title={t.admin.showWishVsResult}
+                              className="inline-flex items-center gap-1 cursor-pointer group"
+                            >
+                              <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300">
+                                {evalData?.satisfactionScore ?? 100}%
+                              </span>
+                              <ChevronRight className={`w-3.5 h-3.5 text-stone-400 group-hover:text-stone-700 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                            </button>
                           </td>
                           <td className="px-3.5 py-2.5 whitespace-nowrap">
-                            {evalData?.blockedConflict ? (
-                              <span className="text-rose-600 dark:text-rose-400 font-bold">
-                                {t.admin.conflict}
-                              </span>
-                            ) : (
-                              <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                                {t.admin.respected}
-                              </span>
-                            )}
+                            {(() => {
+                              // How many days/shifts the family blocked, how many were respected, and how
+                              // big a share of the term's shift days they blocked
+                              const wish = wishes[fam.id];
+                              const shiftDays = new Set(shifts.filter(s => !s.isCancelled).map(s => s.date));
+                              const bDates = (wish?.blockedDates || []).filter(d => shiftDays.has(d));
+                              const bIds = (wish?.blockedShiftIds || []).filter(id => shifts.some(s => s.id === id && !bDates.includes(s.date)));
+                              const total = bDates.length + bIds.length;
+                              if (total === 0) return <span className="text-stone-500 dark:text-stone-400">{t.admin.noBlocks}</span>;
+                              const hitDates = new Set(famShifts.filter(s => bDates.includes(s.date)).map(s => s.date));
+                              const hitIds = famShifts.filter(s => bIds.includes(s.id)).length;
+                              const hits = hitDates.size + hitIds;
+                              const pct = shiftDays.size ? Math.round((100 * bDates.length) / shiftDays.size) : 0;
+                              return (
+                                <div className="leading-tight">
+                                  {hits === 0 ? (
+                                    <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                                      {t.admin.blockedRespectedOf.replace('{ok}', String(total)).replace('{total}', String(total))}
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 dark:text-rose-400 font-bold">
+                                      {t.admin.blockedConflictsOf.replace('{n}', String(hits)).replace('{total}', String(total))}
+                                    </span>
+                                  )}
+                                  <span
+                                    className={`block text-[11px] mt-0.5 ${
+                                      pct >= 30 ? 'text-amber-700 dark:text-amber-400 font-semibold' : 'text-stone-500 dark:text-stone-400'
+                                    }`}
+                                  >
+                                    {t.admin.blockedShareOfDays.replace('{pct}', String(pct))}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </td>
                         </tr>
+                        {isOpen && (
+                          <tr className="bg-stone-50/60 dark:bg-stone-800/40">
+                            <td colSpan={6} className="px-3 py-3">
+                              <WishResultSummary
+                                wish={wishes[fam.id]}
+                                assignedShifts={famShifts}
+                                shiftTypes={shiftTypes}
+                                naturalRatios={calculateDefaultShiftRatios(shifts, shiftTypes)}
+                                lang={lang}
+                              />
+                            </td>
+                          </tr>
+                        )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>

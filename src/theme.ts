@@ -1,3 +1,4 @@
+import { safeGet, safeSet } from './safeStorage';
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface ThemeColors {
@@ -113,7 +114,7 @@ export const themeTokens = {
 
 export function getInitialTheme(): 'light' | 'dark' {
   if (typeof window === 'undefined') return 'light';
-  const saved = localStorage.getItem('coop_theme');
+  const saved = safeGet('coop_theme');
   if (saved === 'dark' || saved === 'light') return saved;
   if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
     return 'dark';
@@ -140,5 +141,5 @@ export function applyTheme(theme: 'light' | 'dark') {
       body.setAttribute('data-theme', 'light');
     }
   }
-  localStorage.setItem('coop_theme', theme);
+  safeSet('coop_theme', theme);
 }

@@ -14,6 +14,10 @@ interface HeaderProps {
   termName: string;
   onOpenChangePin?: () => void;
   onOpenNewTerm?: () => void;
+  /** True once the admin has entered the PIN; admin-only buttons stay hidden until then. */
+  isAdminAuthenticated?: boolean;
+  /** The term currently shown, used by "Kopiera länk" when the URL has no ?term= */
+  currentTermId?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -26,6 +30,8 @@ export const Header: React.FC<HeaderProps> = ({
   termName,
   onOpenChangePin,
   onOpenNewTerm,
+  isAdminAuthenticated = false,
+  currentTermId,
 }) => {
   const t = translations[lang];
   const [copied, setCopied] = useState(false);
@@ -37,7 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
     const hashQuery = hash.includes('?') ? hash.substring(hash.indexOf('?')) : '';
     const hashParams = new URLSearchParams(hashQuery);
     const searchParams = new URLSearchParams(window.location.search);
-    const term = hashParams.get('term') || searchParams.get('term') || '';
+    const term = hashParams.get('term') || searchParams.get('term') || currentTermId || '';
     const query = term ? `?term=${encodeURIComponent(term)}` : '';
     const url = `${origin}${pathname}#/${query}`;
     navigator.clipboard.writeText(url).then(() => {
@@ -68,7 +74,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Action buttons in Toolbar */}
           <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap justify-start sm:justify-end">
             {/* Create new term button (visible in Header when Admin is logged in) */}
-            {isAdmin && onOpenNewTerm && (
+            {isAdmin && isAdminAuthenticated && onOpenNewTerm && (
               <button
                 onClick={onOpenNewTerm}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-200 border border-stone-200 dark:border-stone-700 transition-colors cursor-pointer"
@@ -101,7 +107,7 @@ export const Header: React.FC<HeaderProps> = ({
             )}
 
             {/* Change PIN button (only visible when in admin mode) */}
-            {isAdmin && onOpenChangePin && (
+            {isAdmin && isAdminAuthenticated && onOpenChangePin && (
               <button
                 onClick={onOpenChangePin}
                 className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg text-amber-900 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/70 hover:bg-amber-100 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800 transition-colors cursor-pointer"

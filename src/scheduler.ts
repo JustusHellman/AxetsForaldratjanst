@@ -142,12 +142,32 @@ export function shiftsOverlap(a: Pick<Shift, 'date' | 'startTime' | 'endTime'>, 
   return aS < bE && bS < aE;
 }
 
+/**
+ * "Så nära varandra som möjligt": the shorter the period from the family's first to last shift,
+ * the better. The period is counted in *shift days* – days in the term that have at least one
+ * shift – so a preschool with shifts only Mon/Wed/Fri is judged on those days, and weekends or
+ * days without shifts don't count. 100% when the family's shifts fill consecutive shift days
+ * (span ≤ number of shifts), falling linearly to 25% when they stretch over the whole term.
+ */
+export function groupedSpanScore(spanShiftDays: number, shiftCount: number, termShiftDays: number): number {
+  const ideal = Math.max(1, shiftCount);
+  if (termShiftDays <= ideal) return 100;
+  const x = Math.min(1, Math.max(0, (spanShiftDays - ideal) / (termShiftDays - ideal)));
+  return Math.round(100 - 75 * x);
+}
+
+/** Weight of the type mix for families who answered "Spelar ingen roll" (1 = full weight). */
+export const FLEXIBLE_TYPE_WEIGHT = 0.25;
+const softenFlexible = (typeSat: number) => Math.round(100 - (100 - typeSat) * FLEXIBLE_TYPE_WEIGHT);
+
 export function evaluateFamilySatisfaction(
   family: Family,
   assignedShifts: Shift[],
   wish: FamilyWish | undefined,
   shiftTypes: ShiftType[],
-  allSemesterDaysSpan: number
+  allSemesterDaysSpan: number,
+  /** Sorted, distinct dates in the term that have at least one (non-cancelled) shift. */
+  termShiftDates?: string[]
 ): {
   satisfactionScore: number;
   typeSatisfaction: number;
@@ -185,6 +205,8 @@ export function evaluateFamilySatisfaction(
     }
     const maxDiff = Math.max(1, 2 * assignedShifts.length);
     typeSatisfaction = Math.max(0, Math.round((1 - diffSum / maxDiff) * 100));
+    // "Spelar ingen roll": a soft preference for the usual mix that only counts a quarter
+    if (wish.typeFlexible) typeSatisfaction = softenFlexible(typeSatisfaction);
   }
 
   let spacingSatisfaction = 100;
@@ -209,12 +231,12 @@ export function evaluateFamilySatisfaction(
       }
       spacingSatisfaction = Math.max(20, Math.round(100 - gapPenalty / gaps.length));
     } else if (pref === 'grouped') {
-      let largeGapPenalty = 0;
-      for (const g of gaps) {
-        if (g > 21) largeGapPenalty += 30;
-        else if (g > 14) largeGapPenalty += 15;
-      }
-      spacingSatisfaction = Math.max(25, Math.round(100 - largeGapPenalty / gaps.length));
+      const sortedDates = assignedShifts.map(s => s.date).sort();
+      const first = sortedDates[0];
+      const last = sortedDates[sortedDates.length - 1];
+      const termDates = termShiftDates ?? Array.from(new Set(assignedShifts.map(s => s.date))).sort();
+      const span = termDates.filter(d => d >= first && d <= last).length;
+      spacingSatisfaction = groupedSpanScore(span, assignedShifts.length, termDates.length);
     }
   }
 
@@ -294,7 +316,9 @@ export function optimizeSchedule(
   const defaultRatios = calculateDefaultShiftRatios(activeShifts, shiftTypes);
   const fullWishes: Record<string, FamilyWish> = {};
   families.forEach(f => {
-    fullWishes[f.id] = wishes[f.id] || {
+    const w = wishes[f.id];
+    // "Spelar ingen roll" families lean (softly) towards the preschool's usual mix
+    fullWishes[f.id] = w ? (w.typeFlexible ? { ...w, typeRatios: defaultRatios } : w) : {
       familyId: f.id,
       spacingPreference: 'neutral',
       typeRatios: defaultRatios,
@@ -317,6 +341,10 @@ export function optimizeSchedule(
   const sWeight = activeShifts.map(s => typeMap.get(s.shiftTypeId)?.weight ?? 1.0);
   const sType = activeShifts.map(s => typeIndex.get(s.shiftTypeId) ?? -1);
   const sDay = activeShifts.map(s => Math.round((parseLocalDate(s.date).getTime() - startMs) / DAY));
+  // Shift days: distinct dates with at least one shift. A family's "grouped" span is counted in these.
+  const termShiftDates = Array.from(new Set(activeShifts.map(s => s.date))).sort();
+  const dateRank = new Map(termShiftDates.map((d, k) => [d, k]));
+  const sRank = activeShifts.map(s => dateRank.get(s.date)!);
   const overlapsWith: number[][] = activeShifts.map(() => []);
   {
     const byDate = new Map<string, number[]>();
@@ -339,6 +367,7 @@ export function optimizeSchedule(
   const fWish = families.map(f => fullWishes[f.id]);
   const fRatio = fWish.map(w => shiftTypes.map(t => (w.typeRatios[t.id] ?? 0) / 100));
   const fPref = fWish.map(w => w.spacingPreference || 'neutral');
+  const fFlex = fWish.map(w => Boolean(w.typeFlexible));
   const blocked: boolean[][] = families.map((_, f) => {
     const bd = new Set(fWish[f].blockedDates);
     const bs = new Set(fWish[f].blockedShiftIds);
@@ -373,6 +402,7 @@ export function optimizeSchedule(
       let diff = 0;
       for (let k = 0; k < T; k++) diff += Math.abs(counts[k] - fRatio[f][k] * n);
       typeSat = Math.max(0, Math.round((1 - diff / Math.max(1, 2 * n)) * 100));
+      if (fFlex[f]) typeSat = softenFlexible(typeSat);
     }
     let spacingSat = 100;
     const pref = fPref[f];
@@ -388,12 +418,13 @@ export function optimizeSchedule(
         }
         spacingSat = Math.max(20, Math.round(100 - pen / (n - 1)));
       } else if (pref === 'grouped') {
-        for (let k = 1; k < n; k++) {
-          const g = days[k] - days[k - 1];
-          if (g > 21) pen += 30;
-          else if (g > 14) pen += 15;
+        let first = Infinity;
+        let last = -Infinity;
+        for (const i of list) {
+          if (sRank[i] < first) first = sRank[i];
+          if (sRank[i] > last) last = sRank[i];
         }
-        spacingSat = Math.max(25, Math.round(100 - pen / (n - 1)));
+        spacingSat = groupedSpanScore(last - first + 1, n, termShiftDates.length);
       }
     }
     let score = Math.round(typeSat * 0.55 + spacingSat * 0.45);
@@ -443,13 +474,25 @@ export function optimizeSchedule(
         if (sType[i] >= 0) {
           let ofType = 0;
           for (const j of list) if (sType[j] === sType[i]) ofType++;
-          score += (fRatio[f][sType[i]] * (list.length + 1) - ofType) * 20;
+          score += (fRatio[f][sType[i]] * (list.length + 1) - ofType) * 20 * (fFlex[f] ? FLEXIBLE_TYPE_WEIGHT : 1);
         }
         if (list.length > 0 && fPref[f] !== 'neutral') {
           let nearest = Infinity;
           for (const j of list) nearest = Math.min(nearest, Math.abs(sDay[j] - sDay[i]));
-          if (fPref[f] === 'spread') score += nearest < 7 ? -40 : nearest > 14 ? 15 : 0;
-          else score += nearest <= 14 ? 30 : -20;
+          if (fPref[f] === 'spread') {
+            score += nearest < 7 ? -40 : nearest > 14 ? 15 : 0;
+          } else {
+            // Grouped: prefer shifts that don't stretch the family's current period
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (const j of list) {
+              lo = Math.min(lo, sRank[j]);
+              hi = Math.max(hi, sRank[j]);
+            }
+            // How many shift days this shift would add to the family's period
+            const growth = Math.max(hi, sRank[i]) - Math.min(lo, sRank[i]) - (hi - lo);
+            score += growth === 0 ? 30 : 30 - Math.min(60, growth * 8);
+          }
         }
         if (score > bestScore) {
           bestScore = score;
@@ -459,6 +502,39 @@ export function optimizeSchedule(
       assign[i] = bestF;
       lists[bestF].push(i);
       pts[bestF] += sWeight[i];
+    }
+
+    // ---- 1b. Even out points (hard rule) ----
+    // If a family blocked so much that it ended up below its share, move shifts to it from the
+    // families with the most points until everyone is within one shift weight. Shifts the family
+    // can actually do are preferred; only if none exist anywhere does it get a shift on a day it
+    // blocked (reported as a conflict). Overlapping shifts are never created.
+    const maxWeight = Math.max(...sWeight);
+    for (let guard = 0; guard < S * 2; guard++) {
+      let poor = 0;
+      for (let f = 1; f < F; f++) if (pts[f] / fTarget[f] < pts[poor] / fTarget[poor]) poor = f;
+      const poorRatioAfter = (w: number) => (pts[poor] + w) / fTarget[poor];
+      let bestMove: { i: number; from: number; blockedHit: boolean; cost: number } | null = null;
+      for (let f = 0; f < F; f++) {
+        if (f === poor) continue;
+        for (const i of lists[f]) {
+          const w = sWeight[i];
+          // Only moves that strictly narrow the gap (never overshoot the donor)
+          if (!((pts[f] - w) / fTarget[f] >= pts[poor] / fTarget[poor] - 1e-9 && poorRatioAfter(w) < pts[f] / fTarget[f] - 1e-9)) continue;
+          if (overlapsFamily(i, lists[poor])) continue;
+          const blockedHit = blocked[poor][i];
+          // Prefer: not blocked > take from the richest > smallest loss in satisfaction
+          const cost = (blockedHit ? 1e6 : 0) - (pts[f] / fTarget[f]) * 1000 + (satOf(f, lists[f]) - satOf(f, lists[f].filter(x => x !== i)));
+          if (!bestMove || cost < bestMove.cost) bestMove = { i, from: f, blockedHit, cost };
+        }
+      }
+      if (!bestMove) break;
+      const { i, from } = bestMove;
+      lists[from] = lists[from].filter(x => x !== i);
+      lists[poor].push(i);
+      pts[from] -= sWeight[i];
+      pts[poor] += sWeight[i];
+      assign[i] = poor;
     }
 
     // ---- 2. Focused local search with equal-weight swaps ----
@@ -535,7 +611,9 @@ export function optimizeSchedule(
     // Families who got more than their share should preferably be the happier ones
     let compensation = 0;
     for (let f = 0; f < F; f++) compensation += (pts[f] / fTarget[f] > minR + 1e-9 ? 1 : -1) * (sat[f] - avgSat);
-    const key = [overlaps, conflicts, pointSpread, -minSat, -sumSat, -Math.round(compensation)];
+    // Priority: no overlaps > points within one shift > fewest blocked-date conflicts > ...
+    const pointExcess = Math.max(0, Math.round((pointSpread - maxWeight) * 100) / 100);
+    const key = [overlaps, pointExcess, conflicts, pointSpread, -minSat, -sumSat, -Math.round(compensation)];
 
     let isBetter = !best;
     if (best) {
@@ -560,7 +638,7 @@ export function optimizeSchedule(
   let conflictsCount = 0;
   families.forEach((f, fi) => {
     const famShifts = activeShifts.filter((_, i) => bestAssign[i] === fi);
-    const ev = evaluateFamilySatisfaction(f, famShifts, fullWishes[f.id], shiftTypes, semesterDaysSpan);
+    const ev = evaluateFamilySatisfaction(f, famShifts, fullWishes[f.id], shiftTypes, semesterDaysSpan, termShiftDates);
     evaluations[f.id] = { ...ev, familyId: f.id, familyName: f.name, totalShifts: famShifts.length };
     totalSat += ev.satisfactionScore;
     if (ev.blockedConflict) conflictsCount++;

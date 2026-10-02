@@ -8,14 +8,15 @@ import {
   ChevronRight,
   Clock,
   Download,
-  HelpCircle,
 } from 'lucide-react';
 import { generateIcsCalendar } from '../calendarExport';
 import { calculateDefaultShiftRatios, parseLocalDate } from '../scheduler';
 import { Language, translations } from '../translations';
-import { CoopConfig, FamilyWish, Shift, SpacingPreference } from '../types';
+import { CoopConfig, FamilyWish, Shift, SpacingPreference, TypePreferenceLevel } from '../types';
+import { defaultLevels, levelsToRatios, ratiosToLevels } from '../typePreference';
 import { CalendarMonth } from './CalendarMonth';
-import { SegmentedRatioSlider } from './SegmentedRatioSlider';
+import { ShiftTypePreference } from './ShiftTypePreference';
+import { WishResultSummary } from './WishResultSummary';
 import { ShiftBadge } from './ShiftBadge';
 
 interface ParentViewProps {
@@ -58,7 +59,8 @@ export const ParentView: React.FC<ParentViewProps> = ({
 
   // State for 3 choices
   const [spacingPref, setSpacingPref] = useState<SpacingPreference>('neutral');
-  const [typeRatios, setTypeRatios] = useState<Record<string, number>>({});
+  const [typeLevels, setTypeLevels] = useState<Record<string, TypePreferenceLevel>>({});
+  const [typeFlexible, setTypeFlexible] = useState<boolean>(false);
   const [blockedDates, setBlockedDates] = useState<string[]>([]);
   const [blockedShiftIds, setBlockedShiftIds] = useState<string[]>([]);
   const [notes, setNotes] = useState<string>('');
@@ -80,13 +82,15 @@ export const ParentView: React.FC<ParentViewProps> = ({
     if (selectedFamilyId && wishes[selectedFamilyId]) {
       const w = wishes[selectedFamilyId];
       setSpacingPref(w.spacingPreference || 'neutral');
-      setTypeRatios(w.typeRatios || defaultRatios);
+      setTypeLevels(w.typeLevels ?? ratiosToLevels(config.shiftTypes, w.typeRatios || defaultRatios, defaultRatios));
+      setTypeFlexible(Boolean(w.typeFlexible));
       setBlockedDates(w.blockedDates || []);
       setBlockedShiftIds(w.blockedShiftIds || []);
       setNotes(w.notes || '');
     } else {
       setSpacingPref('neutral');
-      setTypeRatios(defaultRatios);
+      setTypeLevels(defaultLevels(config.shiftTypes));
+      setTypeFlexible(false);
       setBlockedDates([]);
       setBlockedShiftIds([]);
       setNotes('');
@@ -138,7 +142,11 @@ export const ParentView: React.FC<ParentViewProps> = ({
     const wish: FamilyWish = {
       familyId: selectedFamilyId,
       spacingPreference: spacingPref,
-      typeRatios,
+      // With only one shift type there is nothing to choose
+      // "Spelar ingen roll" aims (softly) for the usual mix
+      typeRatios: typeFlexible ? { ...defaultRatios } : levelsToRatios(config.shiftTypes, { ...defaultLevels(config.shiftTypes), ...typeLevels }, defaultRatios),
+      typeLevels: { ...defaultLevels(config.shiftTypes), ...typeLevels },
+      typeFlexible: config.shiftTypes.length > 1 ? typeFlexible : false,
       blockedDates,
       blockedShiftIds,
       notes,
@@ -298,6 +306,14 @@ export const ParentView: React.FC<ParentViewProps> = ({
                   <span>{t.schedule.downloadIcs}</span>
                 </button>
               </div>
+
+              <WishResultSummary
+                wish={wishes[selectedFamilyId]}
+                assignedShifts={assignedShifts}
+                shiftTypes={config.shiftTypes}
+                naturalRatios={defaultRatios}
+                lang={lang}
+              />
 
               {assignedShifts.length === 0 ? (
                 <div className="bg-stone-50 dark:bg-stone-800/50 border border-stone-200 dark:border-stone-800 rounded-xl p-8 text-center text-stone-500 dark:text-stone-400">
@@ -506,36 +522,15 @@ export const ParentView: React.FC<ParentViewProps> = ({
               </p>
             </div>
 
-            {/* Notice about preschool mathematical ratio */}
-            <div className="bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-800 rounded-xl p-3.5 sm:p-4 text-xs sm:text-sm text-stone-700 dark:text-stone-300 flex items-start gap-3">
-              <HelpCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold text-stone-900 dark:text-stone-100">
-                  {t.parent.defaultRatioNotice}
-                </p>
-                <div className="flex items-center gap-2.5 sm:gap-3 mt-1.5 flex-wrap">
-                  {config.shiftTypes.map(st => {
-                    const pct = defaultRatios[st.id] ?? 0;
-                    return (
-                      <div key={st.id} className="flex items-center gap-1.5">
-                        <ShiftBadge shiftType={st} size="sm" />
-                        <span className="font-bold text-stone-800 dark:text-stone-200">{pct}%</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="mt-1 text-[11px] sm:text-xs text-stone-500 dark:text-stone-400">
-                  {t.parent.ratioExplanation}
-                </p>
-              </div>
-            </div>
-
-            {/* Segmented Ratio Slider Component */}
-            <SegmentedRatioSlider
+            <ShiftTypePreference
               shiftTypes={config.shiftTypes}
-              ratios={typeRatios}
-              defaultRatios={defaultRatios}
-              onChange={setTypeRatios}
+              naturalRatios={defaultRatios}
+              levels={typeLevels}
+              flexible={typeFlexible}
+              onChange={(levels, flexible) => {
+                setTypeLevels(levels);
+                setTypeFlexible(flexible);
+              }}
               lang={lang}
             />
           </section>
