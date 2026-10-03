@@ -18,6 +18,7 @@ import { CalendarMonth } from './CalendarMonth';
 import { ShiftTypePreference } from './ShiftTypePreference';
 import { WishResultSummary } from './WishResultSummary';
 import { ShiftBadge } from './ShiftBadge';
+import { ExportMenu } from './ExportMenu';
 
 interface ParentViewProps {
   config: CoopConfig;
@@ -215,15 +216,19 @@ export const ParentView: React.FC<ParentViewProps> = ({
               </p>
             </div>
           </div>
-          {selectedFamilyId && assignedShifts.length > 0 && (
-            <button
-              onClick={handleDownloadCalendar}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs sm:text-sm shadow-xs transition-colors shrink-0 cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              <span>{t.schedule.downloadIcs}</span>
-            </button>
-          )}
+          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+            <ExportMenu
+              config={config}
+              shifts={config.shifts}
+              shiftTypes={config.shiftTypes}
+              families={config.families}
+              lang={lang}
+              selectedFamilyId={selectedFamilyId || null}
+              variant="emerald"
+              align="right"
+              showCalendarIcs={true}
+            />
+          </div>
         </div>
       )}
 

@@ -15,6 +15,7 @@ import {
 import { AdminView } from './components/AdminView';
 import { Header } from './components/Header';
 import { ParentView } from './components/ParentView';
+import { PrintableSchedule } from './components/PrintableSchedule';
 import {
   createInitialConfig,
   fetchCoopConfig,
@@ -275,6 +276,9 @@ function AppContent() {
 
       {/* Main Content Area with HashRouter routes */}
       <main className="flex-1 pb-16 w-full max-w-full overflow-x-hidden">
+        {/* Dedicated high-contrast layout for physical print and PDF export */}
+        <PrintableSchedule config={config} lang={lang} />
+
         {statusScreen ? statusScreen : (
         <Routes>
           <Route

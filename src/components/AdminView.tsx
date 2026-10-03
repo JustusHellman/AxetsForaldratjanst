@@ -59,6 +59,7 @@ import {
   TermSummary,
 } from '../types';
 import { CalendarMonth } from './CalendarMonth';
+import { ExportMenu } from './ExportMenu';
 import { ShiftBadge } from './ShiftBadge';
 
 interface AdminViewProps {
@@ -853,6 +854,19 @@ export const AdminView: React.FC<AdminViewProps> = ({
               )}
               <span>{t.app.saveChanges}</span>
             </button>
+
+            {/* Export menu in overview bar when shifts exist */}
+            {(isTermLocked || shifts.some(s => Boolean(s.assignedFamilyId))) && (
+              <ExportMenu
+                config={config}
+                shifts={shifts}
+                shiftTypes={shiftTypes}
+                families={families}
+                lang={lang}
+                variant="secondary"
+                showCalendarIcs={true}
+              />
+            )}
 
             {/* 3. Delete term button in overview bar (last of copy-save-delete) */}
             {termsList.length > 1 && (
@@ -1849,6 +1863,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
+              <ExportMenu
+                config={config}
+                shifts={shifts}
+                shiftTypes={shiftTypes}
+                families={families}
+                lang={lang}
+                variant="secondary"
+                showCalendarIcs={true}
+              />
+
               {config.status === 'completed' ? (
                 <button
                   onClick={() => handleToggleComplete(false)}
